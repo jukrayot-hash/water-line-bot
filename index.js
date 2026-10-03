@@ -125,7 +125,7 @@ ${thaiDateStr} สรุปภาพรวมสถานการณ์น้�
     });
   }
 
-  const candidateModels = ["gemini-2.5-flash", "gemini-2.5-pro"];
+  const candidateModels = ["gemini-3.8-flash", "gemini-3.1-pro-preview"];
   for (let m = 0; m < candidateModels.length; m++) {
     try {
       const response = await ai.models.generateContent({
