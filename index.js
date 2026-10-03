@@ -8,8 +8,8 @@ app.use(express.json());
 // ==========================================
 // ⚙️ ส่วนตั้งค่า (นำ Token และ API Key ของคุณมาใส่ตรงนี้)
 // ==========================================
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "ใส่_GEMINI_API_KEY_ของคุณที่นี่";
-const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_ACCESS_TOKEN || "ใส่_LINE_ACCESS_TOKEN_ของคุณที่นี่";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_ACCESS_TOKEN;
 
 // กำหนด Client ของ Gemini
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
