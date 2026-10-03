@@ -14,8 +14,11 @@ const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_ACCESS_TOKEN || "ใส่_LI
 // กำหนด Client ของ Gemini
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
+/// ตัวแปรสำหรับเก็บรวบรวมรูปภาพชั่วคราว แยกตาม userId (ป้องกันส่งแยกข้อความ)
+const userImageSessions = {};
+
 // ==========================================
-// 🔗 1. LINE Webhook Endpoint (จุดรับข้อความและรูปจาก LINE)
+// 🔗 1. LINE Webhook Endpoint
 // ==========================================
 app.post('/webhook', async (req, res) => {
   try {
@@ -25,32 +28,59 @@ app.post('/webhook', async (req, res) => {
     }
 
     for (const event of events) {
-      // ตรวจสอบว่าเป็นข้อความหรือรูปภาพที่ส่งเข้ามา
-      if (event.type === 'message') {
+      if (event.type === 'message' && event.message.type === 'image') {
         const replyToken = event.replyToken;
         const userId = event.source.userId;
+        const messageId = event.message.id;
 
-        // กรณีส่งรูปภาพเข้ามา
-        if (event.message.type === 'image') {
-          const messageId = event.message.id;
-          console.log(`ได้รับรูปภาพ (Message ID: ${messageId}) กำลังดาวน์โหลด...`);
+        console.log(`ได้รับรูปภาพ (Message ID: ${messageId}) จากผู้ใช้ ${userId}`);
 
-          // 1. ดึงไฟล์รูปภาพจาก LINE Servers
-          const imageBuffer = await getLineImage(messageId);
+        // 1. ดาวน์โหลดรูปภาพจาก LINE
+        const imageBuffer = await getLineImage(messageId);
 
-          // 2. ส่งรูปให้ Gemini วิเคราะห์ตามเงื่อนไข 3 ลุ่มน้ำ
-          console.log("กำลังส่งภาพให้ Gemini วิเคราะห์...");
-          const aiReport = await generateWaterReport([imageBuffer]);
-
-          // 3. ส่งรายงานกลับไปหาผู้ใช้ทาง LINE
-          await replyLineMessage(replyToken, aiReport);
+        // 2. จัดกลุ่มภาพตาม User เพื่อรอรวบรวม
+        if (!userImageSessions[userId]) {
+          userImageSessions[userId] = {
+            images: [],
+            replyTokens: [],
+            timer: null
+          };
         }
-        // กรณีพิมพ์ข้อความธรรมดา
-        else if (event.message.type === 'text') {
-          const userText = event.message.text;
-          if (userText === 'สวัสดี' || userText === 'help') {
-            await replyLineMessage(replyToken, "สวัสดีครับ! ส่งภาพถ่ายหน้าจอข้อมูลอุทกวิทยา (ลุ่มน้ำบางปะกง, ชายฝั่งทะเลตะวันออก, โตนเลสาบ) มาได้เลยครับ เดี๋ยวผมช่วยสรุปรายงานให้");
+
+        userImageSessions[userId].images.push(imageBuffer);
+        userImageSessions[userId].replyTokens.push(replyToken);
+
+        // เคลียร์ Timer เก่า (ถ้ามี) แล้วตั้งเวลาใหม่ 3 วินาที เพื่อรอให้ผู้ใช้ส่งรูปให้ครบทุกรูป
+        if (userImageSessions[userId].timer) {
+          clearTimeout(userImageSessions[userId].timer);
+        }
+
+        userImageSessions[userId].timer = setTimeout(async () => {
+          const session = userImageSessions[userId];
+          delete userImageSessions[userId]; // ลบ Session ทิ้งหลังประมวลผล
+
+          try {
+            console.log(`กำลังประมวลผลรวบรวมรูปภาพทั้งหมด ${session.images.length} รูป...`);
+            
+            // ส่งรูปทั้งหมดไปวิเคราะห์พร้อมกันในครั้งเดียว
+            const aiReport = await generateWaterReport(session.images);
+
+            // ส่งผลลัพธ์กลับไปหาผู้ใช้ทาง LINE (ใช้ replyToken อันแรก)
+            if (session.replyTokens.length > 0) {
+              await replyLineMessage(session.replyTokens[0], aiReport);
+            }
+          } catch (err) {
+            console.error("Aggregation Processing Error:", err);
+            if (session.replyTokens.length > 0) {
+              await replyLineMessage(session.replyTokens[0], "ขออภัย เกิดข้อผิดพลาดในการประมวลผลภาพรวม: " + err.message);
+            }
           }
+        }, 3000); // รอ 3 วินาทีเผื่อส่งหลายรูปติดกัน
+
+      } else if (event.type === 'message' && event.message.type === 'text') {
+        const userText = event.message.text;
+        if (userText === 'สวัสดี' || userText === 'help') {
+          await replyLineMessage(event.replyToken, "สวัสดีครับ! ส่งภาพถ่ายหน้าจอข้อมูลอุทกวิทยา (ลุ่มน้ำบางปะกง, ชายฝั่งทะเลตะวันออก, โตนเลสาบ) มาได้เลยครับ ส่งมาหลายรูปพร้อมกันได้ เดี๋ยวผมรวบรวมและสรุปเป็นรายงานฉบับเดียวให้ครับ");
         }
       }
     }
@@ -83,7 +113,7 @@ async function getLineImage(messageId) {
 }
 
 // ==========================================
-// 🧠 ฟังก์ชันส่งภาพให้ Gemini วิเคราะห์ (Zero-hallucination & 3 ลุ่มน้ำ)
+// 🧠 ฟังก์ชันส่งภาพทั้งหมดให้ Gemini วิเคราะห์รอบเดียว (รวบรวมข้อมูล + Zero-hallucination)
 // ==========================================
 async function generateWaterReport(imageBuffers) {
   const now = new Date();
@@ -91,24 +121,24 @@ async function generateWaterReport(imageBuffers) {
   const months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"];
   const thaiDateStr = `วันที่ ${now.getDate()} ${months[now.getMonth()]} พ.ศ. ${yearBE}`;
 
-  const systemPrompt = `คุณคือผู้เชี่ยวชาญด้านวิศวกรรมทรัพยากรน้ำและอุทกวิทยา หน้าที่ของคุณคือนำ "ภาพถ่ายหน้าจอข้อมูลสถานการณ์น้ำหรือปริมาณฝนสะสม" ที่แนบมา มาทำการวิเคราะห์และเรียบเรียงเป็นรายงานสถานการณ์น้ำอย่างละเอียด
+  const systemPrompt = `คุณคือผู้เชี่ยวชาญด้านวิศวกรรมทรัพยากรน้ำและอุทกวิทยา หน้าที่ของคุณคือนำ "ภาพถ่ายหน้าจอข้อมูลสถานการณ์น้ำหรือปริมาณฝนสะสมทั้งหมด ${imageBuffers.length} รูป" ที่แนบมานี้ มาทำการรวบรวมข้อมูลทั้งหมดเข้าด้วยกัน แล้ววิเคราะห์เรียบเรียงเป็นรายงานสถานการณ์น้ำฉบับสมบูรณ์เพียงฉบับเดียว
 
 ⚠️ **กฎเหล็กสำคัญที่สุด (เคร่งครัดมาก):**
 1. **ขอบเขตพื้นที่:** โครงการนี้อยู่ในเขต 3 ลุ่มน้ำภาคตะวันออกเท่านั้น ได้แก่ (1) ลุ่มน้ำบางปะกง (2) ลุ่มน้ำชายฝั่งทะเลตะวันออก และ (3) ลุ่มน้ำโตนเลสาบ ห้ามอ้างอิงพื้นที่อื่นเด็ดขาด
-2. **อ่านข้อมูลจากรูปภาพที่แนบมาเท่านั้น:** ให้ตรวจสอบตัวเลข สถานี พื้นที่ ระดับน้ำ ระดับตลิ่ง หรือปริมาณฝน (มม.) ที่ปรากฏอยู่ในรูปภาพจริง ห้ามแต่งเติมหรือกุตัวเลขขึ้นมาเองเด็ดขาด (Zero-hallucination)
+2. **อ่านข้อมูลจากรูปภาพทั้งหมดที่แนบมาเท่านั้น:** ให้รวบรวมและตรวจสอบตัวเลข สถานี พื้นที่ ระดับน้ำ ระดับตลิ่ง หรือปริมาณฝน (มม.) จากทุกรูปที่แนบมา ห้ามแต่งเติมหรือกุตัวเลขขึ้นมาเองเด็ดขาด (Zero-hallucination)
 3. ในข้อความรายงาน **ต้องระบุตัวเลขวันที่อย่างชัดเจน คือ ${thaiDateStr}** เป็นภาษาไทยทั้งหมด และใช้คำว่า **"พ.ศ."** แทนการสะกดเต็ม
 4. ใช้ภาษาไทยที่เป็นทางการ สละสลวย จัดรูปแบบหัวข้อและย่อหน้าให้อ่านง่าย
 
 ใช้โครงสร้างรายงานตามรูปแบบนี้:
 
-${thaiDateStr} สรุปภาพรวมสถานการณ์น้ำและปริมาณฝนในพื้นที่ 3 ลุ่มน้ำภาคตะวันออก (บางปะกง, ชายฝั่งทะเลตะวันออก, โตนเลสาบ) จากข้อมูลและภาพถ่ายหน้าจอที่รวบรวมจากระบบอุทกวิทยา พบว่ามีหลายพื้นที่ได้รับอิทธิพลจากปริมาณฝนสะสม 24 ชั่วโมง โดยมีบางสถานีวัดปริมาณฝนสะสมในเกณฑ์สำคัญ ซึ่งส่งผลให้ระดับน้ำในลำน้ำบางแห่งมีแนวโน้มเปลี่ยนแปลงตามสภาพภูมิประเทศ
+${thaiDateStr} สรุปภาพรวมสถานการณ์น้ำและปริมาณฝนในพื้นที่ 3 ลุ่มน้ำภาคตะวันออก (บางปะกง, ชายฝั่งทะเลตะวันออก, โตนเลสาบ) จากข้อมูลและภาพถ่ายหน้าจอทั้งหมดที่รวบรวมจากระบบอุทกวิทยา พบว่ามีหลายพื้นที่ได้รับอิทธิพลจากปริมาณฝนสะสม 24 ชั่วโมง โดยมีบางสถานีวัดปริมาณฝนสะสมในเกณฑ์สำคัญ ซึ่งส่งผลให้ระดับน้ำในลำน้ำบางแห่งมีแนวโน้มเปลี่ยนแปลงตามสภาพภูมิประเทศ
 
-ด้านสถานการณ์ระดับน้ำในลำน้ำและปริมาณฝนสะสม (อิงจากภาพถ่ายที่แนบมา)
+ด้านสถานการณ์ระดับน้ำในลำน้ำและปริมาณฝนสะสม (อิงจากภาพถ่ายทั้งหมดที่แนบมา)
 
 * **สถานการณ์ระดับน้ำและจุดที่ล้นตลิ่ง:** 
-  * [ระบุชื่อสถานี พื้นที่ และตัวเลขระดับน้ำ/ระดับตลิ่ง จากในภาพจริงเฉพาะ 3 ลุ่มน้ำที่กำหนด]
+  * [รวบรวมและระบุชื่อสถานี พื้นที่ และตัวเลขระดับน้ำ/ระดับตลิ่ง จากในภาพทั้งหมดเฉพาะ 3 ลุ่มน้ำที่กำหนด]
 * **ปริมาณฝนสะสม 24 ชั่วโมง:** 
-  * [ระบุชื่อสถานีและปริมาณฝนที่เป็นตัวเลข มม. จากในภาพจริง]
+  * [รวบรวมและระบุชื่อสถานีและปริมาณฝนที่เป็นตัวเลข มม. จากในภาพทั้งหมด]
 * **แนวโน้มระดับน้ำและการคาดการณ์ล่วงหน้า 3 วัน (จาก Thaiwater):** 
   * ระดับน้ำในปัจจุบันของสถานีส่วนใหญ่มีแนวโน้มทรงตัวและเปลี่ยนแปลงตามปริมาณฝนที่ตกลงมาในพื้นที่ 
   * สำหรับการคาดการณ์ล่วงหน้า 3 วันข้างหน้า หากยังมีฝนตกสะสมต่อเนื่องในพื้นที่ จะส่งผลให้ระดับน้ำในลำน้ำยังคงทรงตัวในเกณฑ์สูงหรือต้องเฝ้าระวังในจุดเสี่ยงเดิม
@@ -125,9 +155,12 @@ ${thaiDateStr} สรุปภาพรวมสถานการณ์น้�
     });
   }
 
-  const candidateModels = ["gemini-3.8-flash", "gemini-3.1-pro-preview","gemini-3.5-flash","gemini-2.5-flash", "gemini-1.5-flash",];
+  // เรียงลำดับโมเดลที่ดีที่สุดและพร้อมใช้งานที่สุดขึ้นก่อน
+  const candidateModels = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-3.1-pro-preview"];
+  
   for (let m = 0; m < candidateModels.length; m++) {
     try {
+      console.log(`กำลังเรียกใช้งานโมเดล: ${candidateModels[m]}...`);
       const response = await ai.models.generateContent({
         model: candidateModels[m],
         contents: contentsArray,
@@ -141,7 +174,7 @@ ${thaiDateStr} สรุปภาพรวมสถานการณ์น้�
     }
   }
 
-  throw new Error("เซิร์ฟเวอร์ AI ไม่สามารถประมวลผลภาพได้");
+  throw new Error("เซิร์ฟเวอร์ AI ไม่สามารถประมวลผลภาพได้ทั้งหมด (โปรดตรวจสอบโควต้า API Key อีกครั้ง)");
 }
 
 // ==========================================
