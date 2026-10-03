@@ -156,8 +156,8 @@ ${thaiDateStr} สรุปภาพรวมสถานการณ์น้�
   }
 
   // เรียงลำดับโมเดลที่ดีที่สุดและพร้อมใช้งานที่สุดขึ้นก่อน
-  const candidateModels = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-pro-preview", "gemini-3.5-flash"];
-  
+  // กำหนดลำดับโมเดลสำรอง เพื่อป้องกันปัญหา 503 หรือ Quota เต็ม
+  const candidateModels = ["gemini-3.8-flash", "gemini-3.1-pro-preview"];
   for (let m = 0; m < candidateModels.length; m++) {
     try {
       console.log(`กำลังเรียกใช้งานโมเดล: ${candidateModels[m]}...`);
