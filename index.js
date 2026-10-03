@@ -156,7 +156,7 @@ ${thaiDateStr} สรุปภาพรวมสถานการณ์น้�
   }
 
   // เรียงลำดับโมเดลที่ดีที่สุดและพร้อมใช้งานที่สุดขึ้นก่อน
-  const candidateModels = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-3.1-pro-preview", "gemini-3.5-flash"];
+  const candidateModels = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-pro-preview", "gemini-3.5-flash"];
   
   for (let m = 0; m < candidateModels.length; m++) {
     try {
